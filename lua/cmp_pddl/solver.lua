@@ -1,14 +1,14 @@
 -- lua/cmp_pddl/solver.lua
 -- Communicates with a planning-as-a-service server (solver.planning.domains:5001)
 --
--- API flow:
---   GET  /package                        -> { planner_id: {description, ...}, ... }
---   POST /package/{planner}/solve        -> { result: job_id }
---   GET  /package/{planner}/result/{id}  -> { status: "PENDING"|"ok"|"error", result: {...} }
+-- Confirmed API (solver.planning.domains:5001):
+--   GET  /package                              -> { planner_id: {description,...}, ... }
+--   POST /package/{planner}/solve              -> { result: "/check/{uuid}?external=True" }
+--   GET  /check/{uuid}?external=True           -> { status: "ok"|"error", result: {...} }
 
 local M = {}
 
--- ─── Config storage ───────────────────────────────────────────────────────────
+-- ─── Config ───────────────────────────────────────────────────────────────────
 
 local CONFIG_FILE = vim.fn.stdpath("data") .. "/cmp_pddl.json"
 
@@ -20,7 +20,10 @@ local function load_config()
 	local raw = f:read("*a")
 	f:close()
 	local ok, cfg = pcall(vim.fn.json_decode, raw)
-	return (ok and type(cfg) == "table") and cfg or { servers = {}, last_server = nil, last_planner = nil }
+	if ok and type(cfg) == "table" then
+		return cfg
+	end
+	return { servers = {}, last_server = nil, last_planner = nil }
 end
 
 local function save_config(cfg)
@@ -48,7 +51,6 @@ end
 function M.get_servers()
 	return load_config().servers
 end
-
 function M.get_last()
 	local cfg = load_config()
 	return cfg.last_server, cfg.last_planner
@@ -61,11 +63,11 @@ local function set_last(server, planner)
 	save_config(cfg)
 end
 
--- ─── HTTP via curl ────────────────────────────────────────────────────────────
+-- ─── HTTP ─────────────────────────────────────────────────────────────────────
 
 local function curl(args, on_done)
 	local out = {}
-	local all_args = { "curl", "-s", "--max-time", "15" }
+	local all_args = { "curl", "-s", "--max-time", "30" }
 	for _, a in ipairs(args) do
 		table.insert(all_args, a)
 	end
@@ -94,79 +96,100 @@ local function http_post(url, payload, on_done)
 	curl({ "-X", "POST", "-H", "Content-Type: application/json", "-d", payload, url }, on_done)
 end
 
--- ─── JSON decode ─────────────────────────────────────────────────────────────
+-- ─── Helpers ──────────────────────────────────────────────────────────────────
 
 local function decode(body)
 	if not body or body == "" then
 		return nil, "empty response"
 	end
+	-- Detect HTML (error page) before trying JSON decode
+	if body:match("^%s*<!") or body:match("^%s*<html") then
+		local title = body:match("<title>(.-)</title>") or "HTML error page"
+		return nil, title
+	end
 	local ok, val = pcall(vim.fn.json_decode, body)
 	if not ok then
-		return nil, "json decode error: " .. tostring(val)
+		return nil, "json decode: " .. tostring(val)
 	end
 	return val, nil
 end
 
--- ─── Result buffer ────────────────────────────────────────────────────────────
-
--- Flatten a list of strings — nvim_buf_set_lines cannot accept strings
--- that contain embedded newline characters.
-local function flatten_lines(lines)
+-- Flatten lines — nvim_buf_set_lines rejects strings with embedded \n
+local function flatten(lines)
 	local flat = {}
-	for _, line in ipairs(lines) do
-		local parts = vim.split(tostring(line), "\n", { plain = true })
-		for _, part in ipairs(parts) do
+	for _, l in ipairs(lines) do
+		for _, part in ipairs(vim.split(tostring(l), "\n", { plain = true })) do
 			table.insert(flat, part)
 		end
 	end
 	return flat
 end
 
-local function open_result_buf(lines, title)
-	local existing = nil
+-- ─── Result buffer ────────────────────────────────────────────────────────────
+
+local function get_or_create_buf(title)
 	for _, b in ipairs(vim.api.nvim_list_bufs()) do
-		if vim.api.nvim_buf_get_name(b):match(vim.pesc(title)) then
-			existing = b
-			break
+		if vim.api.nvim_buf_get_name(b) == title then
+			return b
 		end
 	end
-
-	local flat = flatten_lines(lines)
-	local buf = existing or vim.api.nvim_create_buf(false, true)
-
-	vim.bo[buf].modifiable = true
-	vim.api.nvim_buf_set_lines(buf, 0, -1, false, flat)
-	vim.bo[buf].modifiable = false
+	local buf = vim.api.nvim_create_buf(false, true)
+	vim.api.nvim_buf_set_name(buf, title)
 	vim.bo[buf].buftype = "nofile"
 	vim.bo[buf].bufhidden = "hide"
 	vim.bo[buf].swapfile = false
-	vim.api.nvim_buf_set_name(buf, title)
+	vim.keymap.set("n", "q", ":bd<CR>", { buffer = buf, silent = true })
+	return buf
+end
 
-	local visible = false
+local function set_buf_lines(buf, lines)
+	local flat = flatten(lines)
+	vim.bo[buf].modifiable = true
+	vim.api.nvim_buf_set_lines(buf, 0, -1, false, flat)
+	vim.bo[buf].modifiable = false
+end
+
+local function ensure_visible(buf, height)
 	for _, w in ipairs(vim.api.nvim_list_wins()) do
 		if vim.api.nvim_win_get_buf(w) == buf then
-			visible = true
-			break
+			return
 		end
 	end
-	if not visible then
-		vim.cmd("botright split")
-		vim.api.nvim_win_set_buf(0, buf)
-		vim.api.nvim_win_set_height(0, math.min(#flat + 2, 20))
-	end
+	vim.cmd("botright split")
+	vim.api.nvim_win_set_buf(0, buf)
+	vim.api.nvim_win_set_height(0, height or 15)
+end
 
-	vim.keymap.set("n", "q", ":bd<CR>", { buffer = buf, silent = true, desc = "Close plan buffer" })
+-- ─── Loading state ────────────────────────────────────────────────────────────
 
-	return buf
+local spinner_frames = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
+
+local function loading_lines(server, planner, attempt, max, message)
+	local frame = spinner_frames[(attempt % #spinner_frames) + 1]
+	local bar_width = 20
+	local filled = math.floor((attempt / max) * bar_width)
+	local bar = string.rep("█", filled) .. string.rep("░", bar_width - filled)
+
+	return {
+		"",
+		"  " .. frame .. "  " .. message,
+		"",
+		"  Server  : " .. server,
+		"  Planner : " .. planner,
+		"",
+		"  Progress  [" .. bar .. "]  " .. attempt .. "/" .. max,
+		"",
+		"  Press q to cancel",
+	}
 end
 
 -- ─── Plan renderer ────────────────────────────────────────────────────────────
 
-local function render_result(data, server, planner)
+local function render_result(data, server, planner, buf)
 	local lines = {
-		"============================================================",
+		"  ============================================================",
 		"  PDDL Plan Result",
-		"============================================================",
+		"  ============================================================",
 		"",
 		"  Server  : " .. server,
 		"  Planner : " .. planner,
@@ -191,9 +214,9 @@ local function render_result(data, server, planner)
 		end
 
 		if #steps == 0 then
-			table.insert(lines, "  Plan found — goal already satisfied (empty plan)")
+			table.insert(lines, "  ✓  Goal already satisfied — empty plan")
 		else
-			table.insert(lines, string.format("  Plan found — %d step%s", #steps, #steps == 1 and "" or "s"))
+			table.insert(lines, string.format("  ✓  Plan found — %d step%s", #steps, #steps == 1 and "" or "s"))
 			table.insert(lines, "")
 			table.insert(lines, "  ----------------------------------------------------")
 			for i, step in ipairs(steps) do
@@ -209,7 +232,6 @@ local function render_result(data, server, planner)
 		if result.makespan then
 			table.insert(lines, "  Makespan : " .. tostring(result.makespan))
 		end
-
 		if result.output and result.output ~= "" then
 			table.insert(lines, "")
 			table.insert(lines, "  -- Planner output ----------------------------------")
@@ -218,15 +240,13 @@ local function render_result(data, server, planner)
 			end
 		end
 	else
-		table.insert(lines, "  No solution found  (status: " .. status .. ")")
+		table.insert(lines, "  ✗  No solution  (status: " .. status .. ")")
 		table.insert(lines, "")
-
 		local detail = nil
 		if type(data.result) == "table" then
 			detail = data.result.error or data.result.stderr or data.result.output
 		end
 		detail = detail or data.error
-
 		if detail and detail ~= "" then
 			table.insert(lines, "  -- Planner output ----------------------------------")
 			for _, l in ipairs(vim.split(tostring(detail), "\n", { plain = true })) do
@@ -236,66 +256,64 @@ local function render_result(data, server, planner)
 	end
 
 	table.insert(lines, "")
-	table.insert(lines, "  Press q to close this buffer")
+	table.insert(lines, "  Press q to close")
 
-	open_result_buf(lines, "PDDL-Plan[" .. planner .. "]")
+	set_buf_lines(buf, lines)
+	ensure_visible(buf, math.min(#lines + 2, 25))
 end
 
 -- ─── Polling ──────────────────────────────────────────────────────────────────
 
-local function poll(url, planner, server, interval, max_attempts, attempt)
+local function poll(poll_url, planner, server, buf, attempt, max)
 	attempt = attempt or 1
-	if attempt > max_attempts then
+
+	-- Update loading state in the buffer
+	vim.schedule(function()
+		set_buf_lines(buf, loading_lines(server, planner, attempt, max, "Solving... waiting for plan"))
+		ensure_visible(buf, 12)
+	end)
+
+	if attempt > max then
 		vim.schedule(function()
-			open_result_buf({
+			set_buf_lines(buf, {
 				"",
-				"  Timed out waiting for planner result.",
-				"  Try again or choose a faster planner.",
+				"  ✗  Timed out after " .. max .. " attempts.",
+				"  Try a faster planner or increase the timeout.",
 				"",
-			}, "PDDL-Plan[" .. planner .. "]")
+			})
 		end)
 		return
 	end
 
 	vim.defer_fn(function()
-		http_get(url, function(body, err)
+		http_get(poll_url, function(body, err)
 			vim.schedule(function()
 				if err then
-					open_result_buf({ "", "  Poll error: " .. err, "" }, "PDDL-Plan[" .. planner .. "]")
+					set_buf_lines(buf, { "", "  ✗  Poll error: " .. err, "" })
 					return
 				end
 
 				local data, derr = decode(body)
 				if not data then
-					open_result_buf({ "", "  Bad response: " .. (derr or "?"), "" }, "PDDL-Plan[" .. planner .. "]")
+					set_buf_lines(buf, {
+						"",
+						"  ✗  Bad poll response: " .. (derr or "?"),
+						"  URL: " .. poll_url,
+						"",
+					})
 					return
 				end
 
 				local status = (data.status or ""):lower()
-
-				if status == "pending" or status == "started" or status == "" then
-					local wait_lines = flatten_lines({
-						"",
-						"  Solving ...  (attempt " .. attempt .. "/" .. max_attempts .. ")",
-						"  Server  : " .. server,
-						"  Planner : " .. planner,
-						"",
-					})
-					for _, b in ipairs(vim.api.nvim_list_bufs()) do
-						local bname = vim.api.nvim_buf_get_name(b)
-						if bname:match("PDDL%-Plan%[" .. vim.pesc(planner) .. "%]") then
-							vim.bo[b].modifiable = true
-							vim.api.nvim_buf_set_lines(b, 0, -1, false, wait_lines)
-							vim.bo[b].modifiable = false
-						end
-					end
-					poll(url, planner, server, interval, max_attempts, attempt + 1)
+				if status == "ok" or status == "error" then
+					render_result(data, server, planner, buf)
 				else
-					render_result(data, server, planner)
+					-- Still pending — recurse
+					poll(poll_url, planner, server, buf, attempt + 1, max)
 				end
 			end)
 		end)
-	end, interval)
+	end, 2000)
 end
 
 -- ─── Public API ───────────────────────────────────────────────────────────────
@@ -303,44 +321,43 @@ end
 function M.solve(server, planner, domain, problem)
 	set_last(server, planner)
 
+	local title = "PDDL-Plan[" .. planner .. "]"
+	local buf = get_or_create_buf(title)
 	local url = server .. "/package/" .. planner .. "/solve"
 	local payload = vim.fn.json_encode({ domain = domain, problem = problem })
 
-	open_result_buf({
-		"",
-		"  Submitting to " .. server,
-		"  Planner : " .. planner,
-		"",
-		"  Waiting for job id ...",
-		"",
-	}, "PDDL-Plan[" .. planner .. "]")
+	-- Show loading state immediately
+	set_buf_lines(buf, loading_lines(server, planner, 0, 30, "Submitting job..."))
+	ensure_visible(buf, 12)
 
 	http_post(url, payload, function(body, err)
 		vim.schedule(function()
 			if err then
-				open_result_buf({ "", "  Submission failed: " .. err, "" }, "PDDL-Plan[" .. planner .. "]")
+				set_buf_lines(buf, { "", "  ✗  Submission failed: " .. err, "" })
 				return
 			end
 
 			local data, derr = decode(body)
 			if not data then
-				open_result_buf({ "", "  Bad response: " .. (derr or body or "?"), "" }, "PDDL-Plan[" .. planner .. "]")
+				set_buf_lines(buf, {
+					"",
+					"  ✗  Bad submission response: " .. (derr or "?"),
+					"  URL: " .. url,
+					"",
+				})
 				return
 			end
 
-			-- The server returns {"result": "/check/{uuid}?external=True"}
-			-- The result field is the full poll path — just prepend the server base URL.
-			local poll_path = nil
-			if type(data.result) == "string" then
-				poll_path = data.result
-			end
+			-- Server returns { "result": "/check/{uuid}?external=True" }
+			local poll_path = type(data.result) == "string" and data.result or nil
 
 			if poll_path then
 				local poll_url = server .. poll_path
-				poll(poll_url, planner, server, 2000, 30, 1)
+				set_buf_lines(buf, loading_lines(server, planner, 1, 30, "Job queued — polling for result..."))
+				poll(poll_url, planner, server, buf, 1, 30)
 			else
-				-- Some servers return the plan immediately
-				render_result(data, server, planner)
+				-- Immediate result (some servers/planners return synchronously)
+				render_result(data, server, planner, buf)
 			end
 		end)
 	end)
@@ -357,13 +374,9 @@ function M.fetch_planners(server, on_done)
 			on_done(nil, derr)
 			return
 		end
-
 		local planners = {}
 		for id, meta in pairs(data) do
-			local desc = ""
-			if type(meta) == "table" then
-				desc = meta.description or meta.name or ""
-			end
+			local desc = type(meta) == "table" and (meta.description or meta.name or "") or ""
 			table.insert(planners, { id = id, description = desc })
 		end
 		table.sort(planners, function(a, b)
