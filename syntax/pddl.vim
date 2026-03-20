@@ -1,4 +1,4 @@
--- syntax/pddl.vim  (sourced as vimscript even in a Lua plugin)
+" syntax/pddl.vim
 if exists("b:current_syntax")
   finish
 endif
