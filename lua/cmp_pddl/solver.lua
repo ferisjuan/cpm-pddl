@@ -328,17 +328,18 @@ function M.solve(server, planner, domain, problem)
 				return
 			end
 
-			local job_id = nil
+			-- The server returns {"result": "/check/{uuid}?external=True"}
+			-- The result field is the full poll path — just prepend the server base URL.
+			local poll_path = nil
 			if type(data.result) == "string" then
-				job_id = data.result
-			elseif type(data.result) == "table" and data.result.solve_id then
-				job_id = data.result.solve_id
+				poll_path = data.result
 			end
 
-			if job_id then
-				local poll_url = server .. "/package/" .. planner .. "/result/" .. job_id
+			if poll_path then
+				local poll_url = server .. poll_path
 				poll(poll_url, planner, server, 2000, 30, 1)
 			else
+				-- Some servers return the plan immediately
 				render_result(data, server, planner)
 			end
 		end)
