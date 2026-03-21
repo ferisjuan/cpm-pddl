@@ -86,7 +86,7 @@ highlight default link pddlTypeOf      Type
 highlight default link pddlComment     Comment
 highlight default link pddlNumber      Number
 highlight default link pddlParen       Delimiter
-highlight default link pddlIntlError   Error
+highlight default pddlIntlError guisp=#FF0000 gui=undercurl cterm=underline ctermfg=196
 
 " STACK (bright blue) / UNSTACK (steel blue)
 highlight default pddlPlanStack   guifg=#89DDFF ctermfg=117

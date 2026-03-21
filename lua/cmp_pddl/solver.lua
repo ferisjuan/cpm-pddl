@@ -258,6 +258,21 @@ end
 
 -- ─── Plan renderer ────────────────────────────────────────────────────────────
 
+-- Strip the words "domain" and "problem" (with surrounding separators) from a filename stem
+local function clean_name(stem)
+	local s = stem:lower()
+	s = s:gsub("[%-_]domain[%-_]", "-")
+	s = s:gsub("[%-_]problem[%-_]", "-")
+	s = s:gsub("[%-_]?domain$", "")
+	s = s:gsub("[%-_]?problem$", "")
+	s = s:gsub("^domain[%-_]?", "")
+	s = s:gsub("^problem[%-_]?", "")
+	s = s:gsub("[%-_]+", "-")
+	s = s:gsub("^[%-_]+", "")
+	s = s:gsub("[%-_]+$", "")
+	return s
+end
+
 local action_emojis = {
 	["PICK-UP"] = "⬆️",
 	["PUT-DOWN"] = "⬇️",
@@ -283,10 +298,10 @@ local function save_plan_to_file(steps, domain_path, problem_path)
 		return nil, "No domain path provided"
 	end
 
-	-- Derive plan filename from domain/problem
-	-- E.g., domain.pddl + problem.pddl -> domain_problem_plan.pddl
-	local domain_name = vim.fn.fnamemodify(domain_path, ":t:r") -- filename without extension
-	local problem_name = problem_path and vim.fn.fnamemodify(problem_path, ":t:r") or "problem"
+	local domain_name = clean_name(vim.fn.fnamemodify(domain_path, ":t:r"))
+	local problem_name = clean_name(
+		problem_path and vim.fn.fnamemodify(problem_path, ":t:r") or "unknown"
+	)
 	local dir = vim.fn.fnamemodify(domain_path, ":h")
 
 	local plan_filename = domain_name .. "_" .. problem_name .. "_plan.pddl"
@@ -308,6 +323,24 @@ local function save_plan_to_file(steps, domain_path, problem_path)
 	f:close()
 
 	return plan_path, nil
+end
+
+-- Save the rendered buffer lines to {domain}_plan-result.txt
+local function save_result_to_file(lines, domain_path)
+	if not domain_path or domain_path == "" then
+		return nil, "No domain path provided"
+	end
+	local domain_name = clean_name(vim.fn.fnamemodify(domain_path, ":t:r"))
+	local dir = vim.fn.fnamemodify(domain_path, ":h")
+	local result_path = dir .. "/" .. domain_name .. "_plan-result.txt"
+	local f = io.open(result_path, "w")
+	if not f then
+		return nil, "Could not write to " .. result_path
+	end
+	f:write(table.concat(lines, "\n"))
+	f:write("\n")
+	f:close()
+	return result_path, nil
 end
 
 local function render_result(data, server, planner, buf, domain_path, problem_path)
@@ -431,6 +464,13 @@ local function render_result(data, server, planner, buf, domain_path, problem_pa
 	table.insert(lines, "")
 	table.insert(lines, "  Press q to close this buffer")
 	table.insert(lines, "")
+
+	local result_path, result_err = save_result_to_file(lines, domain_path)
+	if result_path then
+		table.insert(lines, #lines - 1, "  📄 Result   : " .. result_path)
+	elseif result_err then
+		table.insert(lines, #lines - 1, "  ⚠  Could not save result: " .. result_err)
+	end
 
 	set_buf_lines(buf, lines)
 	apply_highlights(buf)
