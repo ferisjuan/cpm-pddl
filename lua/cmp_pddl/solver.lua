@@ -258,6 +258,25 @@ end
 
 -- ─── Plan renderer ────────────────────────────────────────────────────────────
 
+local action_emojis = {
+	["PICK-UP"] = "⬆️",
+	["PUT-DOWN"] = "⬇️",
+	["STACK"] = "📦",
+	["UNSTACK"] = "📤",
+}
+
+-- Format a plan step: strip parens/cost, uppercase, prepend emoji
+local function format_step(step)
+	local s = step:match("^%((.-)%)$") or step
+	s = s:gsub("%s*%(%d+%)%s*$", "")
+	s = s:upper()
+	local keyword = s:match("^([A-Z%-]+)")
+	if keyword and action_emojis[keyword] then
+		s = action_emojis[keyword] .. " " .. s
+	end
+	return s
+end
+
 -- Save plan to file
 local function save_plan_to_file(steps, domain_path, problem_path)
 	if not domain_path or domain_path == "" then
@@ -272,22 +291,6 @@ local function save_plan_to_file(steps, domain_path, problem_path)
 
 	local plan_filename = domain_name .. "_" .. problem_name .. "_plan.pddl"
 	local plan_path = dir .. "/" .. plan_filename
-
-	-- Format a plan action: remove parentheses and add emoji by keyword
-	local action_emojis = {
-		["PICK-UP"] = "⬆️",
-		["PUT-DOWN"] = "⬇️",
-		["STACK"] = "📦",
-		["UNSTACK"] = "📤",
-	}
-	local function format_step(step)
-		local formatted = step:gsub("^%((.-)%)$", "%1")
-		local keyword = formatted:match("^([A-Z%-]+)")
-		if keyword and action_emojis[keyword] then
-			formatted = formatted:gsub("^" .. keyword, action_emojis[keyword] .. " " .. keyword, 1)
-		end
-		return formatted
-	end
 
 	-- Write plan to file
 	local content = {}
@@ -335,6 +338,17 @@ local function render_result(data, server, planner, buf, domain_path, problem_pa
 		-- Extract cost from stdout
 		local stdout = result.stdout or ""
 		local cost = stdout:match("Plan found with cost: ([%d%.]+)")
+			or stdout:match("Plan cost: (%d+)")
+
+		-- Fallback: parse plan steps from stdout when output.plan is empty
+		if #steps == 0 and stdout ~= "" then
+			for _, line in ipairs(vim.split(stdout, "\n", { plain = true })) do
+				local trimmed = line:match("^%s*(.-)%s*$")
+				if trimmed and trimmed:match("^[a-z][a-z%-]*( [a-zA-Z0-9_%-]+)+ ?(%(%d+%))?$") then
+					table.insert(steps, trimmed)
+				end
+			end
+		end
 
 		-- Header info
 		table.insert(lines, "  📋 Server   : " .. server)
@@ -371,7 +385,7 @@ local function render_result(data, server, planner, buf, domain_path, problem_pa
 					table.insert(lines, "  │  START")
 				end
 				table.insert(lines, "  │     ↓")
-				table.insert(lines, string.format("  │  %2d. %s", i, step))
+				table.insert(lines, string.format("  │  %2d. %s", i, format_step(step)))
 			end
 
 			table.insert(lines, "  │     ↓")
