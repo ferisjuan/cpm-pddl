@@ -6,8 +6,13 @@
 - 🔍 [nvim-cmp](https://github.com/hrsh7th/nvim-cmp) autocompletion source
 - 🤖 Integration with [solver.planning.domains](https://solver.planning.domains) for running planners
 - 📊 Beautiful plan visualization with syntax highlighting
-- 💾 Automatic plan file saving
-- 🎨 Syntax highlighting and snippets
+- 💾 Automatic plan file saving (`.pddl`) and result file saving (`.txt`)
+- 🎨 Syntax highlighting with action-specific colors and error linting
+- 🚨 International character linting
+
+<a href="https://www.buymeacoffee.com/ferisjuan" target="_blank">
+  <img src="https://cdn.buymeacoffee.com/buttons/v2/default-violet.png" alt="Buy Me A Coffee" style="height: 60px; width: 217px;" />
+</a>
 
 ---
 
@@ -21,6 +26,7 @@
 - [Commands](#commands)
 - [Autocompletion](#autocompletion)
 - [Snippets](#snippet-support)
+- [Syntax Highlighting](#syntax-highlighting)
 - [Development](#development)
 - [License](#license)
 
@@ -54,14 +60,17 @@ or problem file, inside `:requirements`, `:action`, `:precondition`, `:effect`,
 - 🌐 Connect to planning-as-a-service servers (e.g., [solver.planning.domains](https://solver.planning.domains:5001))
 - 🚀 Run any available planner (LAMA, Fast-Downward, dual-BFWS, etc.)
 - 📊 Beautiful plan visualization with:
-  - Color-coded syntax highlighting
+  - Color-coded syntax highlighting per action type
   - Visual flow arrows (START → steps → GOAL)
-  - Step numbering
+  - Step numbering with progressive indentation
   - Cost and metadata display
   - Planner output logs
-- 💾 Automatic plan saving to `{domain}_{problem}_plan.txt`
+- 💾 Two output files saved automatically:
+  - `{domain}_{problem}_plan.pddl` — the plan steps with emoji-formatted actions
+  - `{domain}_plan-result.txt` — the full rendered result buffer
 - ⚡ Live progress bar with spinner during solving
 - 🔄 Automatic polling for asynchronous solvers
+- 🔁 Stdout fallback parsing when the API returns an empty plan field
 
 ---
 
@@ -153,22 +162,25 @@ require("cmp").setup({
 ╚════════════════════════════════════════════════════════════════╝
 
   📋 Server   : https://solver.planning.domains:5001
-  🤖 Planner  : dual-bfws-ffparser
+  🤖 Planner  : lama-first
   📊 Steps    : 44
   💰 Cost     : 44
 
   ✓  Plan found successfully!
 
-  💾 Saved to : /path/to/blocks-domain_blocks-problem_plan.txt
+  💾 Saved to : /path/to/blocksworld_blocksworld_plan.pddl
+  📄 Result   : /path/to/blocksworld_plan-result.txt
 
   ┌─────────────────────────────────────────────────────────┐
   │  START
   │     ↓
-  │   1. (UNSTACK C E)
+  │   1. 📤 UNSTACK C E
   │     ↓
-  │   2. (STACK C F)
+  │   2. 📦 STACK C F
   │     ↓
-  │   3. (UNSTACK E J)
+  │   3. ⬇️ PUT-DOWN E
+  │     ↓
+  │   4. ⬆️ PICK-UP G
   │     ↓
   ...
   │     ↓
@@ -177,11 +189,37 @@ require("cmp").setup({
 ```
 
 The output features:
-- 🎨 **Color syntax highlighting** (step numbers in purple, actions in cyan, arrows in orange)
+- 🎨 **Color syntax highlighting** (action-specific colors — see [Syntax Highlighting](#syntax-highlighting))
 - 📊 **Metadata display** (server, planner, step count, cost)
 - ➡️ **Visual flow** showing progression from START to GOAL
-- 💾 **Auto-saved plans** to `{domain}_{problem}_plan.txt`
+- 💾 **Auto-saved plan** to `{domain}_{problem}_plan.pddl`
+- 📄 **Auto-saved result** to `{domain}_plan-result.txt`
 - 📝 **Planner logs** included at the bottom
+
+### Plan File Format (`_plan.pddl`)
+
+Each action is formatted with:
+- Number at column 0
+- Progressive indentation: line N gets N spaces before the action
+- Parentheses stripped
+- Action keyword uppercased
+- Emoji prefix per action type
+
+```
+1. ⬆️ PICK-UP A
+2.  📦 STACK A B
+3.   📤 UNSTACK C D
+10.          ⬇️ PUT-DOWN E
+```
+
+### File Naming
+
+The words `domain` and `problem` are automatically stripped from filenames:
+
+| Domain file | Problem file | Plan file | Result file |
+|---|---|---|---|
+| `blocksworld-domain.pddl` | `blocksworld-problem.pddl` | `blocksworld_blocksworld_plan.pddl` | `blocksworld_plan-result.txt` |
+| `my-domain.pddl` | `task-problem-01.pddl` | `my_task-01_plan.pddl` | `my_plan-result.txt` |
 
 ---
 
@@ -202,7 +240,8 @@ The command will:
 - Validate the PDDL syntax before sending
 - Show a live progress bar during solving
 - Display the plan with beautiful formatting
-- Save the plan to `{domain}_{problem}_plan.txt`
+- Save the plan to `{domain}_{problem}_plan.pddl`
+- Save the full result buffer to `{domain}_plan-result.txt`
 
 ### `:PddlAddServer`
 
@@ -278,7 +317,7 @@ you need a snippet engine registered with nvim-cmp, such as
 
 ---
 
-## Syntax highlighting
+## Syntax Highlighting
 
 The plugin ships a `syntax/pddl.vim` file that highlights:
 
@@ -289,11 +328,36 @@ The plugin ships a `syntax/pddl.vim` file that highlights:
 - Comments (`;`)
 - Numbers
 
-Plan result buffers also feature custom highlighting:
+### Colon keywords
+
+All `:word` tokens (`:action`, `:parameters`, `:requirements`, etc.) are
+highlighted in **violet** — distinct from plain identifiers and operators.
+
+### Plan action colors
+
+Actions in plan files and plan result buffers are highlighted with distinct
+colors per verb:
+
+| Action | Color |
+|---|---|
+| `STACK` | Bright blue `#89DDFF` |
+| `UNSTACK` | Steel blue `#61AFEF` |
+| `PICK-UP` | Light amber `#FFCB6B` |
+| `PUT-DOWN` | Deep amber `#C78D3A` |
+
+### International character linting
+
+Any word containing a non-ASCII character (e.g. `café`, `naïve`) is marked
+with a **red undercurl** — the same style used by spell checkers. Standalone
+emojis (used as action prefixes) are not flagged.
+
+### Plan result buffers
+
+Custom highlights applied to the result buffer:
 - **Borders**: Muted blue-gray box drawing
 - **Success/Error**: Green/red status indicators
 - **Step numbers**: Purple, bold
-- **Actions**: Cyan
+- **Actions**: Per-verb color (see table above)
 - **Arrows**: Orange
 - **Metadata**: Gray, italic
 
@@ -398,6 +462,9 @@ If you see "goal already satisfied (0 steps)" but expect a plan:
 1. Check if using an old cached version: `:PddlReload`
 2. Verify domain and problem files are correctly loaded
 3. Check planner output logs (shown at bottom of result buffer)
+
+The plugin includes a stdout fallback parser: if `output.plan` is empty, it
+automatically extracts steps from the planner's raw stdout output.
 
 ### Module caching issues
 
