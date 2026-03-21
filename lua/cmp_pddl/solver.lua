@@ -270,13 +270,29 @@ local function save_plan_to_file(steps, domain_path, problem_path)
 	local problem_name = problem_path and vim.fn.fnamemodify(problem_path, ":t:r") or "problem"
 	local dir = vim.fn.fnamemodify(domain_path, ":h")
 
-	local plan_filename = domain_name .. "_" .. problem_name .. "_plan.txt"
+	local plan_filename = domain_name .. "_" .. problem_name .. "_plan.pddl"
 	local plan_path = dir .. "/" .. plan_filename
+
+	-- Format a plan action: remove parentheses and add emoji by keyword
+	local action_emojis = {
+		["PICK-UP"] = "⬆️",
+		["PUT-DOWN"] = "⬇️",
+		["STACK"] = "📦",
+		["UNSTACK"] = "📤",
+	}
+	local function format_step(step)
+		local formatted = step:gsub("^%((.-)%)$", "%1")
+		local keyword = formatted:match("^([A-Z%-]+)")
+		if keyword and action_emojis[keyword] then
+			formatted = formatted:gsub("^" .. keyword, action_emojis[keyword] .. " " .. keyword, 1)
+		end
+		return formatted
+	end
 
 	-- Write plan to file
 	local content = {}
 	for i, step in ipairs(steps) do
-		table.insert(content, string.format("%d. %s", i, step))
+		table.insert(content, string.format("%d. %s", i, format_step(step)))
 	end
 
 	local f = io.open(plan_path, "w")
