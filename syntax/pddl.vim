@@ -70,7 +70,7 @@ syntax keyword pddlPlanPutdown put-down
 syntax match  pddlColon        /:\w\+[-\w]*/
 
 " ── International / non-ASCII characters (lint as error) ─────────────────────
-syntax match  pddlIntlError    /[^\x00-\x7F]/
+syntax match  pddlIntlError    /\S*[^\x00-\x7F]\S*/
 
 " ── Highlight links ───────────────────────────────────────────────────────────
 highlight default link pddlKeyword     Keyword
